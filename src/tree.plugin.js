@@ -1,109 +1,119 @@
-'use strict';
+"use strict";
 
-// No more underscore. Using modern JS.
+const _ = require("underscore");
+_.str = require("underscore.string");
+_.mixin(_.str.exports());
 
-// Utility: remove empty parts from an array
-const compact = arr => arr.filter(Boolean);
-
-// Utility: string startsWith but safely
-const startsWith = (str, prefix) => str.startsWith(prefix);
-
+// ----------------------------
+// Tree Builder Class
+// ----------------------------
 class Tree {
     constructor(collection, includeRoot) {
+        // Root documents object
         this.documents = {};
+
+        // Normalize URLs for tree building (but never modify DocPad URLs)
         this.urlRegex = /^\/|\/$|index\.\w*$/g;
 
-        collection.forEach(doc => {
-            // Split URL → array of path segments
-            let parts = compact(doc.url.replace(this.urlRegex, '').split('/'));
+        const addChild = (doc, parts, parent, index) => {
+            const part = parts[index];
+
+            // Initialize new node if needed
+            const current = parent[part] = parent[part] || { children: {} };
+
+            // Is this the leaf node?
+            if (index === parts.length - 1) {
+                current.title = doc.menu || doc.title;
+                current.url = doc.url;
+                current.order = doc.order || 0;
+                current.hidden = doc.hidden || false;
+            } else {
+                addChild(doc, parts, current.children, index + 1);
+            }
+        };
+
+        // Build tree for each document
+        collection.forEach((doc) => {
+            let parts = _.compact(doc.url.replace(this.urlRegex, "").split("/"));
 
             if (includeRoot) {
-                parts.unshift('/');
+                parts.unshift("/");
             }
 
             if (parts.length > 0) {
-                this._addChild(doc, parts, this.documents, 0);
+                addChild(doc, parts, this.documents, 0);
             }
         });
     }
 
-    _addChild(doc, parts, parent, index) {
-        const part = parts[index];
-
-        // Initialize new "node" if missing
-        const current = parent[part] = parent[part] || { children: {} };
-
-        const isLeaf = (parts.length - 1) === index;
-
-        if (isLeaf) {
-            current.title = doc.menu || doc.title;
-            current.url = doc.url;
-            current.order = doc.order || 0;
-            current.hidden = doc.hidden || false;
-        } else {
-            this._addChild(doc, parts, current.children, index + 1);
-        }
-    }
-
+    // Convert internal nested structure into final JSON output
     toJSON(context) {
-        const urlRegex = this.urlRegex;
         const output = [];
+        let documents = this.documents;
+        const urlRegex = this.urlRegex;
 
-        const addDocument = (parentArr, current) => {
+        const addDocument = (parent, current) => {
+            // Skip hidden entries
             if (current.hidden) return;
 
-            parentArr.push(current);
+            parent.push(current);
 
             if (context) {
-                const contextUrl = context.url.replace(urlRegex, '');
-                const currentUrl = current.url.replace(urlRegex, '');
+                const contextUrl = context.url.replace(urlRegex, "");
+                const currentUrl = current.url.replace(urlRegex, "");
 
-                current.active = startsWith(contextUrl, currentUrl);
-                current.current = (contextUrl === currentUrl);
+                current.active = _.startsWith(contextUrl, currentUrl);
+                current.current = contextUrl === currentUrl;
             }
 
-            // Convert children object → sorted array
-            const childNodes = Object.values(current.children || {});
-            const sorted = childNodes.sort((a, b) => parseFloat(a.order) - parseFloat(b.order));
+            let children = _.sortBy(current.children, (doc) => parseFloat(doc.order));
 
-            if (sorted.length === 0) {
+            if (_.isEmpty(children)) {
                 delete current.children;
                 return;
             }
 
             current.children = [];
-
-            sorted.forEach(child => {
-                addDocument(current.children, child);
+            Object.keys(children).forEach((key) => {
+                addDocument(current.children, children[key]);
             });
         };
 
-        // First-level sort
-        const firstLevel = Object.values(this.documents)
-            .sort((a, b) => parseFloat(a.order) - parseFloat(b.order));
+        // First-level sorting
+        documents = _.sortBy(documents, (doc) => parseFloat(doc.order));
 
-        firstLevel.forEach(child => addDocument(output, child));
+        Object.keys(documents).forEach((key) => {
+            addDocument(output, documents[key]);
+        });
 
         return output;
     }
 }
 
+// ----------------------------
+// DocPad Plugin
+// ----------------------------
 module.exports = function (BasePlugin) {
-    return BasePlugin.extend({
-        name: 'tree',
+    class TreePlugin extends BasePlugin {
+        get name() {
+            return "tree";
+        }
 
         extendTemplateData(options) {
             const docpad = this.docpad;
             const templateData = options.templateData;
 
-            templateData.tree = (collection, context, includeRoot) => {
-                if (!collection) collection = 'documents';
-                const docs = docpad.getCollection(collection).toJSON();
+            templateData.tree = function (collection, context, includeRoot = false) {
+                if (collection === null) {
+                    collection = "documents";
+                }
 
-                const tree = new Tree(docs, includeRoot);
+                const docs = docpad.getCollection(collection);
+                const tree = new Tree(docs.toJSON(), includeRoot);
                 return tree.toJSON(context);
             };
         }
-    });
-};
+    }
 
+    return TreePlugin;
+};
