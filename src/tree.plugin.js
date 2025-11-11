@@ -1,103 +1,108 @@
-// docpad-plugin-tree: Forked + Replaced with Custom Working Implementation
+'use strict';
 
-const Plugin = require('docpad').Plugin;
-const _ = require('underscore');
-_.str = require('underscore.string');
-_.mixin(_.str.exports());
+// No more underscore. Using modern JS.
 
-module.exports = Plugin.extend({
-    name: 'tree',
+// Utility: remove empty parts from an array
+const compact = arr => arr.filter(Boolean);
 
-    /**
-     * Build a hierarchical tree from a DocPad collection
-     * @param {String|Object} collection - Collection name or collection object
-     * @param {Object|null} context - Active document to mark active/current states
-     * @param {Boolean} includeRoot - Whether to add a root-level '/'
-     */
-    tree(collection, context, includeRoot) {
-        const urlRegex = /^\/|\/$|index\.\w*$/g;
+// Utility: string startsWith but safely
+const startsWith = (str, prefix) => str.startsWith(prefix);
 
-        class Tree {
-            constructor(collection, includeRoot) {
-                this.documents = {};
+class Tree {
+    constructor(collection, includeRoot) {
+        this.documents = {};
+        this.urlRegex = /^\/|\/$|index\.\w*$/g;
 
-                const addChild = (doc, parts, parent, index) => {
-                    const part = parts[index];
-                    const current = parent[part] || (parent[part] = { children: {} });
+        collection.forEach(doc => {
+            // Split URL → array of path segments
+            let parts = compact(doc.url.replace(this.urlRegex, '').split('/'));
 
-                    if (index === parts.length - 1) {
-                        current.title = doc.menu || doc.title;
-                        current.url = doc.url;
-                        current.order = doc.order || 0;
-                        current.hidden = doc.hidden || false;
-                    } else {
-                        addChild(doc, parts, current.children, index + 1);
-                    }
-                };
-
-                collection.forEach((doc) => {
-                    let parts = doc.url.replace(urlRegex, '').split('/');
-                    parts = _.compact(parts);
-
-                    if (includeRoot) parts.unshift('/');
-
-                    if (parts.length) {
-                        addChild(doc, parts, this.documents, 0);
-                    }
-                });
+            if (includeRoot) {
+                parts.unshift('/');
             }
 
-            toJSON(context) {
-                const output = [];
-
-                const addDocument = (parent, current) => {
-                    if (current.hidden) return;
-
-                    parent.push(current);
-
-                    // Add active/current states
-                    if (context) {
-                        const contextUrl = context.url.replace(urlRegex, '');
-                        const currentUrl = current.url.replace(urlRegex, '');
-
-                        current.active = _.startsWith(contextUrl, currentUrl);
-                        current.current = contextUrl === currentUrl;
-                    }
-
-                    // Sort children
-                    const sortedChildren = _.sortBy(current.children, (doc) => parseFloat(doc.order));
-
-                    // Remove or recurse
-                    if (_.isEmpty(sortedChildren)) {
-                        delete current.children;
-                        return;
-                    }
-
-                    current.children = [];
-                    Object.keys(sortedChildren).forEach((childKey) => {
-                        addDocument(current.children, sortedChildren[childKey]);
-                    });
-                };
-
-                const rootDocs = _.sortBy(this.documents, (doc) => parseFloat(doc.order));
-                Object.keys(rootDocs).forEach((key) => {
-                    addDocument(output, rootDocs[key]);
-                });
-
-                return output;
+            if (parts.length > 0) {
+                this._addChild(doc, parts, this.documents, 0);
             }
-        }
-
-        // Resolve the collection object
-        let coll =
-            typeof collection === 'string'
-                ? this.docpad.getCollection(collection)
-                : collection;
-
-        // Convert collection to plain JSON array
-        coll = coll.toJSON();
-
-        const tree = new Tree(coll, includeRoot);
-        return tree.toJSON(context);
+        });
     }
-});
+
+    _addChild(doc, parts, parent, index) {
+        const part = parts[index];
+
+        // Initialize new "node" if missing
+        const current = parent[part] = parent[part] || { children: {} };
+
+        const isLeaf = (parts.length - 1) === index;
+
+        if (isLeaf) {
+            current.title = doc.menu || doc.title;
+            current.url = doc.url;
+            current.order = doc.order || 0;
+            current.hidden = doc.hidden || false;
+        } else {
+            this._addChild(doc, parts, current.children, index + 1);
+        }
+    }
+
+    toJSON(context) {
+        const urlRegex = this.urlRegex;
+        const output = [];
+
+        const addDocument = (parentArr, current) => {
+            if (current.hidden) return;
+
+            parentArr.push(current);
+
+            if (context) {
+                const contextUrl = context.url.replace(urlRegex, '');
+                const currentUrl = current.url.replace(urlRegex, '');
+
+                current.active = startsWith(contextUrl, currentUrl);
+                current.current = (contextUrl === currentUrl);
+            }
+
+            // Convert children object → sorted array
+            const childNodes = Object.values(current.children || {});
+            const sorted = childNodes.sort((a, b) => parseFloat(a.order) - parseFloat(b.order));
+
+            if (sorted.length === 0) {
+                delete current.children;
+                return;
+            }
+
+            current.children = [];
+
+            sorted.forEach(child => {
+                addDocument(current.children, child);
+            });
+        };
+
+        // First-level sort
+        const firstLevel = Object.values(this.documents)
+            .sort((a, b) => parseFloat(a.order) - parseFloat(b.order));
+
+        firstLevel.forEach(child => addDocument(output, child));
+
+        return output;
+    }
+}
+
+module.exports = BasePlugin =>
+    BasePlugin.extend({
+        name: 'tree',
+
+        extendTemplateData(options) {
+            const docpad = this.docpad;
+            const templateData = options.templateData;
+
+            templateData.tree = (collection, context, includeRoot) => {
+                if (!collection) collection = 'documents';
+
+                const docs = docpad.getCollection(collection).toJSON();
+                const tree = new Tree(docs, includeRoot);
+
+                return tree.toJSON(context);
+            };
+        }
+    });
