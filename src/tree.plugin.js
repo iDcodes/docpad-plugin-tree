@@ -88,8 +88,8 @@ class Tree {
     }
 }
 
-module.exports = BasePlugin =>
-    BasePlugin.extend({
+module.exports = function (BasePlugin) {
+    return BasePlugin.extend({
         name: 'tree',
 
         extendTemplateData(options) {
@@ -98,11 +98,12 @@ module.exports = BasePlugin =>
 
             templateData.tree = (collection, context, includeRoot) => {
                 if (!collection) collection = 'documents';
-
                 const docs = docpad.getCollection(collection).toJSON();
-                const tree = new Tree(docs, includeRoot);
 
+                const tree = new Tree(docs, includeRoot);
                 return tree.toJSON(context);
             };
         }
     });
+};
+
